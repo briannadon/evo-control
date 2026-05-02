@@ -61,7 +61,11 @@ enum Command {
     Preset(PresetCommand),
 
     /// Walk all controls and verify protocol (requires hardware).
-    Probe,
+    Probe {
+        /// Also test SET round-trip (writes original value back).
+        #[arg(long)]
+        probe_writable: bool,
+    },
 
     /// Install kernel module and udev rules (requires sudo).
     InstallDriver,
@@ -178,7 +182,7 @@ fn run_gui() -> anyhow::Result<()> {
 fn run_cli(cmd: Command) -> anyhow::Result<()> {
     match cmd {
         // Commands that don't need the driver
-        Command::Probe => probe::probe(),
+        Command::Probe { probe_writable } => probe::probe(probe_writable),
         Command::InstallDriver => install::install_driver(),
         Command::UninstallDriver => install::uninstall_driver(),
         Command::Preset(PresetCommand::Save { name }) => cli::preset_save(&name),
@@ -211,7 +215,7 @@ fn run_cli(cmd: Command) -> anyhow::Result<()> {
                 }
                 Command::Preset(PresetCommand::Load { name }) => cli::preset_load(&handle, &name),
                 // Unreachable — handled above
-                Command::Probe | Command::InstallDriver | Command::UninstallDriver
+                Command::Probe { .. } | Command::InstallDriver | Command::UninstallDriver
                 | Command::Preset(PresetCommand::Save { .. } | PresetCommand::List | PresetCommand::Delete { .. })
                 | Command::Mixer(MixerCommand::Get | MixerCommand::Reset) => unreachable!(),
             }
