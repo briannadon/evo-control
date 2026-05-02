@@ -25,3 +25,4 @@ anyhow.workspace = true
 # GUI
 eframe = "0.31"
 egui = "0.31"
+nix = { workspace = true, features = ["user"] }

@@ -1181,6 +1181,7 @@ dependencies = [
  "evo-config",
  "evo-driver",
  "evo-protocol",
+ "nix",
 ]
 
 [[package]]

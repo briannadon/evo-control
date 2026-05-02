@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply evo-control default preset
+BindsTo=dev-evo8.device
+After=dev-evo8.device
+PartOf=dev-evo8.device
+
+[Service]
+Type=oneshot
+ExecStart=%h/.cargo/bin/evo-control --apply-default-preset
+RemainAfterExit=yes
+
+[Install]
+WantedBy=dev-evo8.device
