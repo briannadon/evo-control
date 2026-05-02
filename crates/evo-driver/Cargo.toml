@@ -6,3 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+
+[dependencies]
+evo-protocol.workspace = true
+thiserror.workspace = true
+crossbeam-channel.workspace = true
+libc.workspace = true
