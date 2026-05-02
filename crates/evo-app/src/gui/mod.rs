@@ -297,14 +297,23 @@ impl eframe::App for App {
 
                             ui.add_space(4.0);
 
-                            // Send-to-mixer level (set all outputs for this input)
-                            let mut send_db = self.mixer_shadow[i][0];
-                            if widgets::level_slider(ui, "Send", &mut send_db, -128.0, 6.0) {
-                                for out in 0..4 {
-                                    self.mixer_shadow[i][out] = send_db;
-                                    self.write_mixer(i as u8, out as u8, send_db);
+                            // Dual sends: Main → L1/R1, HP → L2/R2
+                            ui.horizontal(|ui| {
+                                let mut s1 = self.mixer_shadow[i][0];
+                                if widgets::level_slider(ui, "Main", &mut s1, -128.0, 6.0) {
+                                    self.mixer_shadow[i][0] = s1;
+                                    self.mixer_shadow[i][1] = s1;
+                                    self.write_mixer(i as u8, 0, s1);
+                                    self.write_mixer(i as u8, 1, s1);
                                 }
-                            }
+                                let mut s2 = self.mixer_shadow[i][2];
+                                if widgets::level_slider(ui, "HP", &mut s2, -128.0, 6.0) {
+                                    self.mixer_shadow[i][2] = s2;
+                                    self.mixer_shadow[i][3] = s2;
+                                    self.write_mixer(i as u8, 2, s2);
+                                    self.write_mixer(i as u8, 3, s2);
+                                }
+                            });
                         });
                     });
                 }
@@ -315,6 +324,7 @@ impl eframe::App for App {
             // Output strips
             ui.heading("Outputs");
             ui.horizontal_wrapped(|ui| {
+                // Hardware output pairs: Main (pair 0) and Headphones (pair 1)
                 for pair in 0..2 {
                     ui.vertical(|ui| {
                         let frame = egui::Frame::default()
@@ -351,6 +361,44 @@ impl eframe::App for App {
                         });
                     });
                 }
+
+                // PC Out strips: DAW playback channels from the computer into the monitor mix.
+                // PC Out 1+2 = mixer rows 4+5; PC Out 3+4 = mixer rows 6+7.
+                for (label, row_l, row_r) in [("PC Out 1+2", 4usize, 5usize), ("PC Out 3+4", 6usize, 7usize)] {
+                    ui.vertical(|ui| {
+                        let frame = egui::Frame::default()
+                            .fill(Color32::from_rgb(30, 30, 30))
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(egui::Margin::symmetric(8, 4));
+                        frame.show(ui, |ui| {
+                            ui.set_min_width(90.0);
+
+                            ui.label(egui::RichText::new(label).size(12.0).strong());
+                            ui.add_space(4.0);
+
+                            ui.horizontal(|ui| {
+                                let mut s1 = self.mixer_shadow[row_l][0];
+                                if widgets::level_slider(ui, "Main", &mut s1, -128.0, 6.0) {
+                                    for row in [row_l, row_r] {
+                                        self.mixer_shadow[row][0] = s1;
+                                        self.mixer_shadow[row][1] = s1;
+                                        self.write_mixer(row as u8, 0, s1);
+                                        self.write_mixer(row as u8, 1, s1);
+                                    }
+                                }
+                                let mut s2 = self.mixer_shadow[row_l][2];
+                                if widgets::level_slider(ui, "HP", &mut s2, -128.0, 6.0) {
+                                    for row in [row_l, row_r] {
+                                        self.mixer_shadow[row][2] = s2;
+                                        self.mixer_shadow[row][3] = s2;
+                                        self.write_mixer(row as u8, 2, s2);
+                                        self.write_mixer(row as u8, 3, s2);
+                                    }
+                                }
+                            });
+                        });
+                    });
+                }
             });
 
             // ── Mixer panel (collapsible) ────────────────────────────────
@@ -383,7 +431,13 @@ impl eframe::App for App {
                                         .text("")
                                         .show_value(false)
                                         .clamping(egui::SliderClamping::Always);
-                                    let changed = ui.add(slider).changed() && *db != old;
+                                    let resp = ui.add(slider);
+                                    let double_clicked = resp.double_clicked()
+                                        || (resp.hovered() && ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)));
+                                    if double_clicked {
+                                        *db = 0.0;
+                                    }
+                                    let changed = double_clicked || (resp.changed() && *db != old);
                                     if changed {
                                         let db_val = *db;
                                         if let Some(ref h) = handle {

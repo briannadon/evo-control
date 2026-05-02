@@ -33,20 +33,42 @@ pub fn toggle_lamp(ui: &mut egui::Ui, label: &str, on: bool, color: Color32) -> 
     response.clicked()
 }
 
-/// A dB-aware vertical slider. Returns the clamped dB value if changed.
+/// A dB-aware vertical slider with sqrt scaling and double-click-to-zero.
+///
+/// Sqrt curve: physical midpoint ≈ −33 dB, 91% travel ≈ 0 dB — more
+/// resolution in the useful range, compressed silence floor.
 pub fn level_slider(ui: &mut egui::Ui, label: &str, db: &mut f32, min: f32, max: f32) -> bool {
+    const CURVE: f32 = 0.5;
+    let db_to_pos = |d: f32| -> f32 {
+        let t = ((d - min) / (max - min)).clamp(0.0, 1.0);
+        t.powf(1.0 / CURVE)
+    };
+    let pos_to_db = |p: f32| -> f32 {
+        min + (max - min) * p.clamp(0.0, 1.0).powf(CURVE)
+    };
+
+    let mut pos = db_to_pos(*db);
     let mut changed = false;
 
     ui.vertical(|ui| {
         ui.label(egui::RichText::new(label).size(10.0).color(Color32::GRAY));
-        let slider = egui::Slider::new(db, min..=max)
+        let slider = egui::Slider::new(&mut pos, 0.0..=1.0)
             .text("")
             .show_value(false)
             .orientation(egui::SliderOrientation::Vertical)
             .clamping(egui::SliderClamping::Always)
             .smart_aim(false);
         let resp = ui.add(slider);
-        if resp.dragged() || resp.changed() {
+
+        let double_clicked = resp.double_clicked()
+            || (resp.hovered()
+                && ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)));
+
+        if double_clicked {
+            *db = 0.0_f32.clamp(min, max);
+            changed = true;
+        } else if resp.dragged() || resp.changed() {
+            *db = pos_to_db(pos);
             changed = true;
         }
         ui.label(format!("{db:.0}"));

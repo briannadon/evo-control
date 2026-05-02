@@ -20,6 +20,8 @@ const KMOD_README: &[u8] = include_bytes!("../../../kmod/README.md");
 const UDEV_RULES: &[u8] = include_bytes!("../../../packaging/99-evo.rules");
 const SYSTEMD_UNIT: &[u8] = include_bytes!("../../../packaging/evo-control-apply.service");
 const WIREPLUMBER_CONF: &[u8] = include_bytes!("../../../packaging/wireplumber/50-evo-routing.conf");
+const DESKTOP_ICON: &[u8] = include_bytes!("../../../packaging/evo-control.svg");
+const DESKTOP_ENTRY: &[u8] = include_bytes!("../../../packaging/evo-control.desktop");
 
 /// Version string embedded in the DKMS package name.
 const KMOD_PACKAGE: &str = "evo-raw";
@@ -39,6 +41,7 @@ pub fn install_driver() -> Result<()> {
     write_udev_rules()?;
     write_systemd_unit()?;
     write_wireplumber_config()?;
+    write_desktop_files()?;
     reload_udev()?;
     load_module()?;
     verify_device()?;
@@ -56,6 +59,7 @@ pub fn uninstall_driver() -> Result<()> {
     remove_udev_rules()?;
     remove_systemd_unit()?;
     remove_wireplumber_config()?;
+    remove_desktop_files()?;
     reload_udev()?;
     Ok(())
 }
@@ -96,10 +100,14 @@ fn target_home() -> PathBuf {
     }
 }
 
-fn check_kernel_headers() -> Result<()> {
-    let uname_r = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+fn running_kernel() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/osrelease")
         .map(|s| s.trim().to_owned())
-        .unwrap_or_else(|_| String::new());
+        .unwrap_or_default()
+}
+
+fn check_kernel_headers() -> Result<()> {
+    let uname_r = running_kernel();
 
     // Check that /lib/modules/$(uname -r)/build exists
     let build_dir = PathBuf::from("/lib/modules").join(&uname_r).join("build");
@@ -145,18 +153,31 @@ fn write_kmod_sources() -> Result<()> {
     Ok(())
 }
 
+/// Check whether evo_raw.ko is installed under /lib/modules for the running kernel.
+/// More reliable than parsing `dkms status` output across DKMS versions.
+fn is_kmod_installed_for_running_kernel() -> bool {
+    let kernel = running_kernel();
+    let base = PathBuf::from("/lib/modules").join(&kernel).join("updates/dkms");
+    for ext in ["ko", "ko.zst", "ko.xz"] {
+        if base.join(format!("evo_raw.{ext}")).exists() {
+            return true;
+        }
+    }
+    false
+}
+
 fn dkms_add_and_install() -> Result<()> {
     let pkg = format!("{KMOD_PACKAGE}/{}", kmod_version());
     let src = kmod_src_dir();
 
-    // Check if already added
-    let added = Command::new("dkms")
+    // Check if already registered with DKMS
+    let registered = Command::new("dkms")
         .args(["status", &pkg])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pkg))
         .unwrap_or(false);
 
-    if !added {
+    if !registered {
         let status = Command::new("dkms")
             .args(["add", &src.to_string_lossy()])
             .status()
@@ -166,7 +187,11 @@ fn dkms_add_and_install() -> Result<()> {
         }
     }
 
-    // Install or upgrade
+    // Skip if already built and installed for the running kernel
+    if is_kmod_installed_for_running_kernel() {
+        return Ok(());
+    }
+
     let status = Command::new("dkms")
         .args(["install", &pkg])
         .status()
@@ -185,12 +210,9 @@ fn write_udev_rules() -> Result<()> {
 fn write_systemd_unit() -> Result<()> {
     let content = systemd_unit_content();
     let path = PathBuf::from("/etc/systemd/user/evo-control-apply.service");
-    // Ensure parent dir exists
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, &content)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    write_file_if_changed(&path, &content)?;
+    // Reload so systemd picks up the unit immediately (no-op if unchanged)
+    let _ = Command::new("systemctl").args(["daemon-reload"]).status();
     Ok(())
 }
 
@@ -201,11 +223,7 @@ fn write_wireplumber_config() -> Result<()> {
         .join("wireplumber")
         .join("wireplumber.conf.d")
         .join("50-evo-routing.conf");
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, WIREPLUMBER_CONF)
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    write_file_if_changed(&path, WIREPLUMBER_CONF)?;
 
     // Fix ownership if running under sudo
     if let Ok(user) = std::env::var("SUDO_USER") {
@@ -381,6 +399,45 @@ fn remove_wireplumber_config() -> Result<()> {
     Ok(())
 }
 
+fn desktop_entry_content() -> Vec<u8> {
+    let exe = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "evo-control".to_string());
+    let raw = std::str::from_utf8(DESKTOP_ENTRY).expect("desktop entry is valid UTF-8");
+    raw.replace("Exec=evo-control", &format!("Exec={exe}"))
+        .into_bytes()
+}
+
+fn write_desktop_files() -> Result<()> {
+    let icon = PathBuf::from("/usr/share/icons/hicolor/scalable/apps/evo-control.svg");
+    write_file_if_changed(&icon, DESKTOP_ICON)?;
+
+    let entry = PathBuf::from("/usr/share/applications/evo-control.desktop");
+    write_file_if_changed(&entry, &desktop_entry_content())?;
+
+    // Best-effort cache refreshes — non-fatal if tools absent
+    let _ = Command::new("gtk-update-icon-cache")
+        .args(["-f", "-t", "/usr/share/icons/hicolor"])
+        .status();
+    let _ = Command::new("update-desktop-database")
+        .args(["/usr/share/applications"])
+        .status();
+
+    Ok(())
+}
+
+fn remove_desktop_files() -> Result<()> {
+    for path in [
+        PathBuf::from("/usr/share/icons/hicolor/scalable/apps/evo-control.svg"),
+        PathBuf::from("/usr/share/applications/evo-control.desktop"),
+    ] {
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────
 
 /// Write `data` to `path` only if the content differs from what's on disk.
@@ -431,6 +488,18 @@ mod tests {
     }
 
     #[test]
+    fn running_kernel_is_nonempty() {
+        let k = running_kernel();
+        assert!(!k.is_empty(), "could not read /proc/sys/kernel/osrelease");
+    }
+
+    #[test]
+    fn is_kmod_installed_does_not_panic() {
+        // Just verifies the path logic doesn't panic; hardware state varies.
+        let _ = is_kmod_installed_for_running_kernel();
+    }
+
+    #[test]
     fn bundled_files_are_nonempty() {
         assert!(!KMOD_C.is_empty());
         assert!(!KMOD_MAKEFILE.is_empty());
@@ -438,6 +507,8 @@ mod tests {
         assert!(!UDEV_RULES.is_empty());
         assert!(!SYSTEMD_UNIT.is_empty());
         assert!(!WIREPLUMBER_CONF.is_empty());
+        assert!(!DESKTOP_ICON.is_empty());
+        assert!(!DESKTOP_ENTRY.is_empty());
     }
 
     #[test]

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=evo-control
+Comment=Audient EVO 8 mixer control
+Exec=evo-control
+Icon=evo-control
+Type=Application
+Categories=Audio;AudioVideo;Mixer;
+Keywords=audio;mixer;EVO;Audient;
+StartupNotify=true
