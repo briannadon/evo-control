@@ -80,6 +80,10 @@ enum SetCommand {
     Volume {
         /// Volume level in dB (-96..0)
         db: f32,
+        /// Output pair index (0=main, 1=headphones).
+        /// If omitted, applies to both pairs.
+        #[arg(long)]
+        pair: Option<u8>,
     },
     /// Set input gain in dB.
     Gain {
@@ -189,7 +193,10 @@ fn run_cli(cmd: Command) -> anyhow::Result<()> {
         Command::Preset(PresetCommand::List) => cli::preset_list(),
         Command::Preset(PresetCommand::Delete { name }) => cli::preset_delete(&name),
         Command::Mixer(MixerCommand::Get) => cli::mixer_get(),
-        Command::Mixer(MixerCommand::Reset) => cli::mixer_reset(),
+        Command::Mixer(MixerCommand::Reset) => {
+            let (handle, _disc) = evo_driver::worker::spawn()?;
+            cli::mixer_reset(&handle)
+        },
 
         // Commands that need the driver
         cmd => {
@@ -200,7 +207,7 @@ fn run_cli(cmd: Command) -> anyhow::Result<()> {
             match cmd {
                 Command::Status => cli::status(&handle),
                 Command::Get { control, target } => cli::get_control(&handle, &control, target.as_deref()),
-                Command::Set(SetCommand::Volume { db }) => cli::set_volume(&handle, db),
+                Command::Set(SetCommand::Volume { db, pair }) => cli::set_volume(&handle, db, pair),
                 Command::Set(SetCommand::Gain { input, db }) => cli::set_gain(&handle, input, db),
                 Command::Set(SetCommand::Phantom { input, state }) => {
                     let on = parse_on_off(&state)?;
@@ -213,11 +220,12 @@ fn run_cli(cmd: Command) -> anyhow::Result<()> {
                 Command::Mixer(MixerCommand::Set { in_idx, out_idx, db }) => {
                     cli::mixer_set(&handle, in_idx, out_idx, db)
                 }
+                Command::Mixer(MixerCommand::Reset) => cli::mixer_reset(&handle),
                 Command::Preset(PresetCommand::Load { name }) => cli::preset_load(&handle, &name),
                 // Unreachable — handled above
                 Command::Probe { .. } | Command::InstallDriver | Command::UninstallDriver
                 | Command::Preset(PresetCommand::Save { .. } | PresetCommand::List | PresetCommand::Delete { .. })
-                | Command::Mixer(MixerCommand::Get | MixerCommand::Reset) => unreachable!(),
+                | Command::Mixer(MixerCommand::Get) => unreachable!(),
             }
         }
     }

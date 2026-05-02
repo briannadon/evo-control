@@ -9,9 +9,21 @@ use evo_driver::DriverHandle;
 
 // ── set ───────────────────────────────────────────────────────────────────
 
-pub fn set_volume(handle: &DriverHandle, db: f32) -> Result<()> {
-    let actual = handle.volume_set(0, db)?;
-    println!("volume set to {actual:.1} dB");
+pub fn set_volume(handle: &DriverHandle, db: f32, pair: Option<u8>) -> Result<()> {
+    match pair {
+        Some(p) => {
+            let actual = handle.volume_set(p, db)?;
+            println!("pair {p} volume set to {actual:.1} dB");
+        }
+        None => {
+            for p in 0..2 {
+                let actual = handle.volume_set(p, db)?;
+                if p == 0 {
+                    println!("volume set to {actual:.1} dB (both pairs)");
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -120,11 +132,60 @@ pub fn mixer_set(handle: &DriverHandle, in_idx: u8, out_idx: u8, db: f32) -> Res
 }
 
 pub fn mixer_get() -> Result<()> {
-    anyhow::bail!("not implemented — mixer is write-only; use `evo-control preset` to manage the shadow");
+    let state_file = evo_config::state_file();
+    let state = evo_config::store::load_state(&state_file)?
+        .unwrap_or_default();
+
+    println!("Mixer matrix (10 inputs × 4 outputs)");
+    println!("Values in dB, -128 = silence");
+    println!();
+    print!("       ");
+    for out in 0..4 {
+        print!("  out{out:>5} ");
+    }
+    println!();
+    println!("  {}", "─".repeat(50));
+    for in_idx in 0..10 {
+        let label = if in_idx < 4 {
+            format!("in{}  ", in_idx + 1)
+        } else if in_idx < 8 {
+            format!("DAW{}", in_idx - 3)
+        } else {
+            format!("LOOP{}", in_idx - 7)
+        };
+        print!("  {label}  ");
+        for out_idx in 0..4 {
+            let db = state.mixer[in_idx][out_idx];
+            if db <= -128.0 {
+                print!("  {:<7}", "—");
+            } else {
+                print!("  {db:>5.1}  ");
+            }
+        }
+        println!();
+    }
+    Ok(())
 }
 
-pub fn mixer_reset() -> Result<()> {
-    anyhow::bail!("not implemented — see Step 10");
+pub fn mixer_reset(handle: &DriverHandle) -> Result<()> {
+    let defaults = DeviceState::default();
+    for in_idx in 0..10 {
+        for out_idx in 0..4 {
+            let db = defaults.mixer[in_idx][out_idx];
+            handle.mixer_set(in_idx as u8, out_idx as u8, db)?;
+        }
+    }
+    // Persist to state.toml
+    let saved = evo_config::store::load_state(&evo_config::state_file())?
+        .unwrap_or_default();
+    let config = evo_config::Config {
+        state: DeviceState { mixer: defaults.mixer, ..saved },
+        presets: std::collections::HashMap::new(),
+        state_path: evo_config::state_file(),
+    };
+    config.save_state()?;
+    println!("mixer reset to defaults");
+    Ok(())
 }
 
 // ── preset ────────────────────────────────────────────────────────────────
