@@ -264,9 +264,9 @@ impl eframe::App for App {
                             ui.label(egui::RichText::new(format!("Input {}", i + 1)).size(12.0).strong());
                             ui.add_space(4.0);
 
-                            // Gain knob
+                            // Gain knob (audio-taper curve spreads perceived volume evenly)
                             let mut gain = self.status.gain_db[i];
-                            if widgets::rotary_knob(ui, &mut gain, -8.0, 50.0, 48.0) {
+                            if widgets::rotary_knob(ui, &mut gain, -8.0, 50.0, 48.0, 0.5) {
                                 self.status.gain_db[i] = gain;
                                 if let Some(handle) = handle.as_ref() {
                                     let _ = handle.gain_set(i as u8, gain);
@@ -328,9 +328,9 @@ impl eframe::App for App {
                             ui.label(egui::RichText::new(label).size(12.0).strong());
                             ui.add_space(4.0);
 
-                            // Volume knob (large)
+                            // Volume knob (large, linear — dB range is already perceptual)
                             let mut vol = self.status.volume_db[pair];
-                            if widgets::rotary_knob(ui, &mut vol, -96.0, 0.0, 64.0) {
+                            if widgets::rotary_knob(ui, &mut vol, -96.0, 0.0, 64.0, 0.5) {
                                 self.status.volume_db[pair] = vol;
                                 if let Some(handle) = handle.as_ref() {
                                     let _ = handle.volume_set(pair as u8, vol);
@@ -361,7 +361,7 @@ impl eframe::App for App {
                     "DAW1", "DAW2", "DAW3", "DAW4",
                     "LOOP1", "LOOP2",
                 ];
-                let labels_out = ["L1", "R1", "L2", "R2"];
+                let labels_out = ["Loopback L1", "Loopback R1", "Loopback L2", "Loopback R2"];
 
                 egui::Grid::new("mixer_grid")
                     .striped(true)
@@ -378,23 +378,25 @@ impl eframe::App for App {
                             for out_idx in 0..4 {
                                 let db = &mut self.mixer_shadow[in_idx][out_idx];
                                 let old = *db;
-                                let slider = egui::Slider::new(db, -128.0..=6.0)
-                                    .text("")
-                                    .show_value(false)
-                                    .clamping(egui::SliderClamping::Always);
-                                let changed = ui.add(slider).changed() && *db != old;
-                                if changed {
-                                    let db_val = *db;
-                                    if let Some(ref h) = handle {
-                                        let _ = h.mixer_set(in_idx as u8, out_idx as u8, db_val);
+                                ui.horizontal(|ui| {
+                                    let slider = egui::Slider::new(db, -128.0..=6.0)
+                                        .text("")
+                                        .show_value(false)
+                                        .clamping(egui::SliderClamping::Always);
+                                    let changed = ui.add(slider).changed() && *db != old;
+                                    if changed {
+                                        let db_val = *db;
+                                        if let Some(ref h) = handle {
+                                            let _ = h.mixer_set(in_idx as u8, out_idx as u8, db_val);
+                                        }
                                     }
-                                }
-                                let val = if *db <= -128.0 {
-                                    "—".to_string()
-                                } else {
-                                    format!("{:.0}", db)
-                                };
-                                ui.label(val);
+                                    let val = if *db <= -128.0 {
+                                        "—".to_string()
+                                    } else {
+                                        format!("{:.0}", db)
+                                    };
+                                    ui.label(val);
+                                });
                             }
                             ui.end_row();
                         }

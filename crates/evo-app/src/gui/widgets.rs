@@ -56,8 +56,23 @@ pub fn level_slider(ui: &mut egui::Ui, label: &str, db: &mut f32, min: f32, max:
 }
 
 /// A rotary knob drawn with the egui painter.
+///
+/// `curve` controls the mapping from knob angle to value:
+/// - `curve = 1.0` → linear (equal angle = equal value change)
+/// - `curve < 1.0` → audio taper (more value at low angles, finer control at the top)
+///   This is the standard for gain/volume knobs: `value = min + (max-min) * pos^curve`.
+///
 /// Returns `true` if the value was changed by user interaction.
-pub fn rotary_knob(ui: &mut egui::Ui, value: &mut f32, min: f32, max: f32, size: f32) -> bool {
+pub fn rotary_knob(ui: &mut egui::Ui, value: &mut f32, min: f32, max: f32, size: f32, curve: f32) -> bool {
+    fn linear_t(value: f32, min: f32, max: f32) -> f32 {
+        ((value - min) / (max - min)).clamp(0.0, 1.0)
+    }
+
+    let range = max - min;
+    let t = linear_t(*value, min, max);
+    // Knob position that produces this value under the curve.
+    let pos = t.powf(1.0 / curve);
+
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click_and_drag());
 
     if ui.is_rect_visible(rect) {
@@ -69,9 +84,8 @@ pub fn rotary_knob(ui: &mut egui::Ui, value: &mut f32, min: f32, max: f32, size:
         painter.circle_filled(center, radius, Color32::from_gray(40));
         painter.circle_stroke(center, radius, egui::Stroke::new(1.0, Color32::GRAY));
 
-        // Value arc
-        let normalized = (*value - min) / (max - min);
-        let angle = std::f32::consts::PI * 0.75 + normalized * std::f32::consts::PI * 1.5;
+        // Value arc — angle follows the knob position (pos), not the linear t
+        let angle = std::f32::consts::PI * 0.75 + pos * std::f32::consts::PI * 1.5;
         let indicator_radius = radius * 0.7;
         let tip = egui::pos2(
             center.x + angle.cos() * indicator_radius,
@@ -81,7 +95,7 @@ pub fn rotary_knob(ui: &mut egui::Ui, value: &mut f32, min: f32, max: f32, size:
 
         // Arc track
         let arc_start = std::f32::consts::PI * 0.75;
-        let arc_end = arc_start + normalized * std::f32::consts::PI * 1.5;
+        let arc_end = arc_start + pos * std::f32::consts::PI * 1.5;
         let n_segments = 32;
         let mut points = Vec::with_capacity(n_segments);
         for i in 0..=n_segments {
@@ -95,12 +109,13 @@ pub fn rotary_knob(ui: &mut egui::Ui, value: &mut f32, min: f32, max: f32, size:
         painter.add(egui::Shape::line(points, egui::Stroke::new(2.0, Color32::LIGHT_BLUE)));
     }
 
-    // Handle drag
+    // Handle drag — operate in knob-position space (linear with angle)
     if response.dragged_by(egui::PointerButton::Primary) {
         let delta = response.drag_delta();
-        let range = max - min;
-        let speed = range / 300.0; // 300 pixels = full range
-        let new = (*value - delta.y * speed).clamp(min, max);
+        let speed = 1.0 / 300.0; // 300 pixels = full knob travel
+        let new_pos = (pos - delta.y * speed).clamp(0.0, 1.0);
+        let new_t = new_pos.powf(curve);
+        let new = min + new_t * range;
         if (new - *value).abs() > 0.01 {
             *value = new;
         }
@@ -110,8 +125,10 @@ pub fn rotary_knob(ui: &mut egui::Ui, value: &mut f32, min: f32, max: f32, size:
     if response.hovered() {
         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
         if scroll != 0.0 {
-            let step = (max - min) / 100.0;
-            *value = (*value - scroll * step).clamp(min, max);
+            let step = 1.0 / 100.0;
+            let new_pos = (pos - scroll * step).clamp(0.0, 1.0);
+            let new_t = new_pos.powf(curve);
+            *value = min + new_t * range;
         }
     }
 
