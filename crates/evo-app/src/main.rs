@@ -152,9 +152,7 @@ fn main() -> anyhow::Result<()> {
 
     // --apply-default-preset flag: used by udev -> systemd hook
     if cli.apply_default_preset {
-        let (handle, _disc) = evo_driver::worker::spawn()
-            .context("device not available — is it plugged in and the kmod loaded?")?;
-        return cli::apply_default_preset(&handle);
+        return cli::apply_default_preset();
     }
 
     // Dispatch to GUI if no subcommand

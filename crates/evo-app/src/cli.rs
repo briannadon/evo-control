@@ -232,11 +232,33 @@ pub fn preset_delete(name: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn apply_default_preset(handle: &DriverHandle) -> Result<()> {
+/// Apply the default preset, retrying device open with exponential backoff.
+///
+/// Maximum wait is ~10 s (3 retries: 1 s, 2 s, 4 s).
+pub fn apply_default_preset() -> Result<()> {
     let state_path = evo_config::state_file();
     let state = evo_config::store::load_state(&state_path)?
         .unwrap_or_default();
-    apply_preset(handle, &state)?;
+
+    let mut last_err = None;
+    for delay in [1, 2, 4] {
+        match evo_driver::worker::spawn() {
+            Ok((handle, _disc)) => {
+                apply_preset(&handle, &state)?;
+                println!("default preset applied");
+                return Ok(());
+            }
+            Err(e) => {
+                last_err = Some(e);
+                std::thread::sleep(std::time::Duration::from_secs(delay));
+            }
+        }
+    }
+    // Final attempt
+    let (handle, _disc) = evo_driver::worker::spawn()
+        .map_err(|e| last_err.unwrap_or(e))
+        .context("device not available after retries — is it plugged in and the kmod loaded?")?;
+    apply_preset(&handle, &state)?;
     println!("default preset applied");
     Ok(())
 }
