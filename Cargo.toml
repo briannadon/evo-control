@@ -1,0 +1,39 @@
+[workspace]
+members = ["crates/evo-protocol", "crates/evo-driver", "crates/evo-config", "crates/evo-app"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bdn/evo-control"
+authors = ["Brian Nadon <brian.nadon@gmail.com>"]
+
+[workspace.dependencies]
+# Internal crates
+evo-protocol = { path = "crates/evo-protocol" }
+evo-driver   = { path = "crates/evo-driver" }
+evo-config   = { path = "crates/evo-config" }
+
+# Error handling
+anyhow    = "1"
+thiserror = "2"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+toml  = "0.8"
+dirs  = "5"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# GUI
+eframe = "0"
+egui   = "0"
+
+# Concurrency
+crossbeam-channel = "0.5"
+
+# System / USB
+nix  = { version = "0", features = ["ioctl"] }
+libc = "0"

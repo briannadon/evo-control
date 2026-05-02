@@ -1,0 +1,8 @@
+[package]
+name = "evo-config"
+description = "Preset save/load and write-only state shadow for evo-control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true

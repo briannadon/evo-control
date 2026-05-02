@@ -1,0 +1,13 @@
+[package]
+name = "evo-control"
+description = "GUI and CLI for the Audient EVO 8 USB audio interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+default-run = "evo-control"
+
+[[bin]]
+name = "evo-control"
+path = "src/main.rs"
