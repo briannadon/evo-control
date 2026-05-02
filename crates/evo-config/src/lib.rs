@@ -25,7 +25,7 @@ pub use store::{delete_preset, list_presets, load_state, save_state, LoadError};
 pub struct Config {
     pub state: DeviceState,
     pub presets: HashMap<String, DeviceState>,
-    state_path: std::path::PathBuf,
+    pub state_path: std::path::PathBuf,
 }
 
 impl Config {

@@ -11,3 +11,17 @@ default-run = "evo-control"
 [[bin]]
 name = "evo-control"
 path = "src/main.rs"
+
+[dependencies]
+# Internal
+evo-driver.workspace = true
+evo-config.workspace = true
+evo-protocol.workspace = true
+
+# CLI
+clap = { workspace = true, features = ["derive"] }
+anyhow.workspace = true
+
+# GUI
+eframe = "0.31"
+egui = "0.31"
