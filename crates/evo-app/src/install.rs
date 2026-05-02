@@ -42,6 +42,8 @@ pub fn install_driver() -> Result<()> {
     reload_udev()?;
     load_module()?;
     verify_device()?;
+    fix_device_permissions()?;
+    ensure_user_in_audio_group()?;
     Ok(())
 }
 
@@ -112,7 +114,13 @@ fn check_kernel_headers() -> Result<()> {
 }
 
 fn ensure_dkms() -> Result<()> {
-    if Command::new("which").arg("dkms").output().is_err() {
+    let found = Command::new("which")
+        .arg("dkms")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if !found {
         eprintln!("dkms not found — installing...");
         let status = Command::new("pacman")
             .args(["-S", "--needed", "--noconfirm", "dkms"])
@@ -247,7 +255,57 @@ fn verify_device() -> Result<()> {
              Try unplugging and re-plugging the EVO 8, then check dmesg."
         );
     }
-    println!("✓ /dev/evo8 ready");
+    println!("✓ kernel module loaded, /dev/evo8 created");
+    Ok(())
+}
+
+/// Ensure /dev/evo8 has MODE=0660 GROUP=audio.
+/// The udev rule handles this for future connects, but the node created
+/// during this install run may predate the rule.
+fn fix_device_permissions() -> Result<()> {
+    let dev = Path::new("/dev/evo8");
+    if !dev.exists() {
+        return Ok(());
+    }
+    Command::new("chmod")
+        .args(["0660", "/dev/evo8"])
+        .status()
+        .context("failed to chmod /dev/evo8")?;
+    Command::new("chown")
+        .args(["root:audio", "/dev/evo8"])
+        .status()
+        .context("failed to chown /dev/evo8")?;
+    println!("✓ /dev/evo8 permissions: crw-rw---- root audio");
+    Ok(())
+}
+
+/// Add the invoking user to the `audio` group if not already a member.
+fn ensure_user_in_audio_group() -> Result<()> {
+    let user = target_user();
+    if user == "root" {
+        return Ok(());
+    }
+
+    // Check if user is already in the audio group
+    let in_group = Command::new("groups")
+        .arg(&user)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("audio"))
+        .unwrap_or(false);
+
+    if !in_group {
+        println!("adding user '{user}' to the 'audio' group...");
+        let status = Command::new("usermod")
+            .args(["-aG", "audio", &user])
+            .status()
+            .context("failed to add user to audio group")?;
+        if status.success() {
+            println!("✓ added '{user}' to 'audio' group");
+            println!("  NOTE: log out and back in for the group change to take effect.");
+        } else {
+            eprintln!("warning: could not add '{user}' to 'audio' group");
+        }
+    }
     Ok(())
 }
 
@@ -386,7 +444,8 @@ mod tests {
     fn udev_rules_contain_evo8() {
         let content = std::str::from_utf8(UDEV_RULES).unwrap();
         assert!(content.contains("evo8"));
-        assert!(content.contains("uaccess"));
+        assert!(content.contains("MODE=\"0660\""));
+        assert!(content.contains("GROUP=\"audio\""));
         assert!(content.contains("SYSTEMD_USER_WANTS"));
     }
 

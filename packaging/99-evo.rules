@@ -4,4 +4,4 @@
 # Grants user access to /dev/evo8 and triggers the apply-preset service
 # on device connect / system boot.
 
-ACTION=="add", SUBSYSTEM=="misc", KERNEL=="evo8", TAG+="uaccess", TAG+="systemd", ENV{SYSTEMD_USER_WANTS}+="evo-control-apply.service"
+ACTION=="add", SUBSYSTEM=="misc", KERNEL=="evo8", MODE="0660", GROUP="audio", TAG+="systemd", ENV{SYSTEMD_USER_WANTS}+="evo-control-apply.service"
