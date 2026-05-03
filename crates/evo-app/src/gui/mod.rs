@@ -192,6 +192,7 @@ impl eframe::App for App {
         self.try_connect();
         self.poll_status();
 
+
         // Clone the handle once so closures don't fight the borrow checker.
         let handle = self.handle.clone();
 
@@ -246,16 +247,6 @@ impl eframe::App for App {
                     let mixer_label = if self.show_mixer { "Hide Mixer" } else { "Mixer Matrix" };
                     if ui.button(mixer_label).clicked() {
                         self.show_mixer = !self.show_mixer;
-                        let rect = ctx.screen_rect();
-                        let (w, h) = (rect.width(), rect.height());
-                        let new_w = if self.show_mixer {
-                            w + MIXER_PANEL_WIDTH
-                        } else {
-                            (w - MIXER_PANEL_WIDTH).max(600.0)
-                        };
-                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
-                            egui::vec2(new_w, h),
-                        ));
                     }
                 });
             });
