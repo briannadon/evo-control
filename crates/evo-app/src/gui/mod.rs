@@ -14,6 +14,8 @@ use evo_driver::{DriverHandle, DeviceStatus};
 const POLL_INTERVAL_MS: u64 = 200;
 const WRITE_DEBOUNCE_MS: u64 = 50;
 
+const MIXER_PANEL_WIDTH: f32 = 540.0;
+
 pub struct App {
     handle: Option<DriverHandle>,
     status: DeviceStatus,
@@ -23,11 +25,12 @@ pub struct App {
     last_poll: Instant,
     last_write: Instant,
 
+    show_mixer: bool,
+
     // Presets
     presets: Vec<String>,
     selected_preset: String,
     new_preset_name: String,
-
 }
 
 impl Default for App {
@@ -39,6 +42,7 @@ impl Default for App {
             connected: false,
             last_poll: Instant::now(),
             last_write: Instant::now(),
+            show_mixer: false,
             presets: Vec::new(),
             selected_preset: String::new(),
             new_preset_name: String::new(),
@@ -47,6 +51,12 @@ impl Default for App {
 }
 
 impl App {
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        let mut app = Self::default();
+        app.load_presets();
+        app
+    }
+
     fn try_connect(&mut self) {
         if self.handle.is_some() {
             return;
@@ -233,9 +243,85 @@ impl eframe::App for App {
                     if ui.button("Save state").clicked() {
                         self.save_current_state();
                     }
+                    let mixer_label = if self.show_mixer { "Hide Mixer" } else { "Mixer Matrix" };
+                    if ui.button(mixer_label).clicked() {
+                        self.show_mixer = !self.show_mixer;
+                        let rect = ctx.screen_rect();
+                        let (w, h) = (rect.width(), rect.height());
+                        let new_w = if self.show_mixer {
+                            w + MIXER_PANEL_WIDTH
+                        } else {
+                            (w - MIXER_PANEL_WIDTH).max(600.0)
+                        };
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                            egui::vec2(new_w, h),
+                        ));
+                    }
                 });
             });
         });
+
+        // ── Mixer side panel ─────────────────────────────────────────────
+        if self.show_mixer {
+            egui::SidePanel::right("mixer_panel")
+                .resizable(false)
+                .min_width(MIXER_PANEL_WIDTH)
+                .show(ctx, |ui| {
+                    let labels_in = [
+                        "IN1", "IN2", "IN3", "IN4",
+                        "DAW1", "DAW2", "DAW3", "DAW4",
+                        "LOOP1", "LOOP2",
+                    ];
+                    let labels_out = ["LB L1", "LB R1", "LB L2", "LB R2"];
+
+                    ui.heading("Mixer Matrix (10×4)");
+                    ui.add_space(4.0);
+                    egui::Grid::new("mixer_grid")
+                        .striped(true)
+                        .min_col_width(60.0)
+                        .show(ui, |ui| {
+                            ui.label("");
+                            for out_label in &labels_out {
+                                ui.label(egui::RichText::new(*out_label).size(10.0).strong());
+                            }
+                            ui.end_row();
+
+                            for in_idx in 0..10 {
+                                ui.label(egui::RichText::new(labels_in[in_idx]).size(10.0).strong());
+                                for out_idx in 0..4 {
+                                    let db = &mut self.mixer_shadow[in_idx][out_idx];
+                                    let old = *db;
+                                    ui.horizontal(|ui| {
+                                        let slider = egui::Slider::new(db, -128.0..=6.0)
+                                            .text("")
+                                            .show_value(false)
+                                            .clamping(egui::SliderClamping::Always);
+                                        let resp = ui.add(slider);
+                                        let double_clicked = resp.double_clicked()
+                                            || (resp.hovered() && ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)));
+                                        if double_clicked {
+                                            *db = 0.0;
+                                        }
+                                        let changed = double_clicked || (resp.changed() && *db != old);
+                                        if changed {
+                                            let db_val = *db;
+                                            if let Some(ref h) = handle {
+                                                let _ = h.mixer_set(in_idx as u8, out_idx as u8, db_val);
+                                            }
+                                        }
+                                        let val = if *db <= -128.0 {
+                                            "—".to_string()
+                                        } else {
+                                            format!("{:.0}", db)
+                                        };
+                                        ui.label(val);
+                                    });
+                                }
+                                ui.end_row();
+                            }
+                        });
+                });
+        }
 
         // ── Main content ─────────────────────────────────────────────────
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -401,61 +487,6 @@ impl eframe::App for App {
                 }
             });
 
-            // ── Mixer panel (collapsible) ────────────────────────────────
-            ui.add_space(8.0);
-            ui.collapsing("Mixer Matrix (10×4)", |ui| {
-                let labels_in = [
-                    "IN1", "IN2", "IN3", "IN4",
-                    "DAW1", "DAW2", "DAW3", "DAW4",
-                    "LOOP1", "LOOP2",
-                ];
-                let labels_out = ["Loopback L1", "Loopback R1", "Loopback L2", "Loopback R2"];
-
-                egui::Grid::new("mixer_grid")
-                    .striped(true)
-                    .min_col_width(60.0)
-                    .show(ui, |ui| {
-                        ui.label("");
-                        for out_label in &labels_out {
-                            ui.label(egui::RichText::new(*out_label).size(10.0).strong());
-                        }
-                        ui.end_row();
-
-                        for in_idx in 0..10 {
-                            ui.label(egui::RichText::new(labels_in[in_idx]).size(10.0).strong());
-                            for out_idx in 0..4 {
-                                let db = &mut self.mixer_shadow[in_idx][out_idx];
-                                let old = *db;
-                                ui.horizontal(|ui| {
-                                    let slider = egui::Slider::new(db, -128.0..=6.0)
-                                        .text("")
-                                        .show_value(false)
-                                        .clamping(egui::SliderClamping::Always);
-                                    let resp = ui.add(slider);
-                                    let double_clicked = resp.double_clicked()
-                                        || (resp.hovered() && ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary)));
-                                    if double_clicked {
-                                        *db = 0.0;
-                                    }
-                                    let changed = double_clicked || (resp.changed() && *db != old);
-                                    if changed {
-                                        let db_val = *db;
-                                        if let Some(ref h) = handle {
-                                            let _ = h.mixer_set(in_idx as u8, out_idx as u8, db_val);
-                                        }
-                                    }
-                                    let val = if *db <= -128.0 {
-                                        "—".to_string()
-                                    } else {
-                                        format!("{:.0}", db)
-                                    };
-                                    ui.label(val);
-                                });
-                            }
-                            ui.end_row();
-                        }
-                    });
-            });
         });
     }
 }

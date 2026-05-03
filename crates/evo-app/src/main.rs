@@ -176,7 +176,7 @@ fn run_gui() -> anyhow::Result<()> {
     eframe::run_native(
         "evo-control",
         options,
-        Box::new(|_cc| Ok(Box::<gui::App>::default())),
+        Box::new(|cc| Ok(Box::new(gui::App::new(cc)))),
     )
     .map_err(|e| anyhow::anyhow!("GUI error: {e}"))
 }
