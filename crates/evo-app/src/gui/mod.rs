@@ -6,24 +6,34 @@
 mod widgets;
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use crossbeam_channel::{Receiver, TryRecvError};
 use eframe::egui::{self, Color32, CornerRadius};
 use evo_driver::{DriverHandle, DeviceStatus};
 
-const POLL_INTERVAL_MS: u64 = 200;
-const WRITE_DEBOUNCE_MS: u64 = 50;
+const POLL_INTERVAL_MS: u64 = 50;
+
+/// Drop the worker if no status snapshot has arrived in this long. Catches
+/// the case where the worker thread is wedged in a `usb_control_msg` after
+/// system resume — the watchdog forces a fresh `/dev/evo8` open.
+const STATUS_STALE_MS: u64 = 2000;
+
+/// If a single frame interval exceeds this, assume the system just resumed
+/// from sleep and force a reconnect proactively (don't wait for staleness).
+const SLEEP_JUMP_MS: u64 = 1500;
 
 const MIXER_PANEL_WIDTH: f32 = 540.0;
 
 pub struct App {
     handle: Option<DriverHandle>,
+    status_rx: Option<Receiver<DeviceStatus>>,
     status: DeviceStatus,
     mixer_shadow: [[f32; 4]; 10],
 
     connected: bool,
-    last_poll: Instant,
-    last_write: Instant,
+    last_status: Instant,
+    last_frame: Instant,
 
     show_mixer: bool,
 
@@ -35,13 +45,15 @@ pub struct App {
 
 impl Default for App {
     fn default() -> Self {
+        let now = Instant::now();
         Self {
             handle: None,
+            status_rx: None,
             status: DeviceStatus::default(),
             mixer_shadow: [[-128.0_f32; 4]; 10],
             connected: false,
-            last_poll: Instant::now(),
-            last_write: Instant::now(),
+            last_status: now,
+            last_frame: now,
             show_mixer: false,
             presets: Vec::new(),
             selected_preset: String::new(),
@@ -61,10 +73,14 @@ impl App {
         if self.handle.is_some() {
             return;
         }
-        match evo_driver::worker::spawn() {
-            Ok((handle, _disc)) => {
+        match evo_driver::worker::spawn_polling(Duration::from_millis(POLL_INTERVAL_MS)) {
+            Ok((handle, _disc, status_rx)) => {
                 self.handle = Some(handle);
-                self.connected = true;
+                self.status_rx = Some(status_rx);
+                self.last_status = Instant::now();
+                // `connected` flips true once the first snapshot actually
+                // arrives — opening /dev/evo8 isn't proof the USB device
+                // is responsive.
             }
             Err(_) => {
                 self.connected = false;
@@ -72,28 +88,58 @@ impl App {
         }
     }
 
+    /// Non-blocking status drain + staleness/sleep-jump watchdog.
     fn poll_status(&mut self) {
         let now = Instant::now();
-        if now.duration_since(self.last_poll).as_millis() < POLL_INTERVAL_MS as u128 {
-            return;
+
+        // Sleep heuristic: if egui hasn't ticked in a long time, the process
+        // was almost certainly suspended. Force a reconnect so we get a fresh
+        // fd on a re-enumerated device.
+        let frame_gap = now.duration_since(self.last_frame);
+        self.last_frame = now;
+        if frame_gap > Duration::from_millis(SLEEP_JUMP_MS) {
+            self.drop_worker();
         }
-        self.last_poll = now;
 
-        let handle = match &self.handle {
-            Some(h) => h,
-            None => return,
-        };
-
-        match handle.status() {
-            Ok(s) => {
+        // Drain everything pending — keep only the newest snapshot.
+        if let Some(rx) = &self.status_rx {
+            let mut latest = None;
+            loop {
+                match rx.try_recv() {
+                    Ok(s) => latest = Some(s),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        // Worker exited (USB error during a poll). Force
+                        // reconnect on the next frame.
+                        self.drop_worker();
+                        break;
+                    }
+                }
+            }
+            if let Some(s) = latest {
                 self.status = s;
                 self.connected = true;
-            }
-            Err(_) => {
-                self.connected = false;
-                self.handle = None;
+                self.last_status = now;
+                return;
             }
         }
+
+        // Watchdog: worker is alive but no fresh snapshot in a while —
+        // likely wedged in a kernel ioctl. Drop it; next frame respawns.
+        if self.handle.is_some()
+            && now.duration_since(self.last_status) > Duration::from_millis(STATUS_STALE_MS)
+        {
+            self.drop_worker();
+        }
+    }
+
+    fn drop_worker(&mut self) {
+        // Dropping the handle closes the request channel; the worker exits
+        // on its next select! iteration (after any in-flight ioctl returns
+        // or times out), which drops the Driver and closes the /dev/evo8 fd.
+        self.handle = None;
+        self.status_rx = None;
+        self.connected = false;
     }
 
     fn load_presets(&mut self) {
@@ -160,35 +206,32 @@ impl App {
     }
 
     fn write_mixer(&self, in_idx: u8, out_idx: u8, db: f32) {
-        let now = Instant::now();
-        if now.duration_since(self.last_write).as_millis() < WRITE_DEBOUNCE_MS as u128 {
-            return;
-        }
         if let Some(handle) = &self.handle {
-            let _ = handle.mixer_set(in_idx, out_idx, db);
+            handle.mixer_set_async(in_idx, out_idx, db);
         }
     }
 }
 
 fn apply_to_device(handle: &DriverHandle, preset: &evo_config::DeviceState) {
-    let _ = handle.volume_set(0, preset.output_volume_db[0]);
-    let _ = handle.volume_set(1, preset.output_volume_db[1]);
+    handle.volume_set_async(0, preset.output_volume_db[0]);
+    handle.volume_set_async(1, preset.output_volume_db[1]);
     for i in 0..4 {
-        let _ = handle.gain_set(i as u8, preset.input_gain_db[i]);
-        let _ = handle.phantom_set(i as u8, preset.phantom[i]);
-        let _ = handle.input_mute_set(i as u8, preset.input_mute[i]);
+        handle.gain_set_async(i as u8, preset.input_gain_db[i]);
+        handle.phantom_set_async(i as u8, preset.phantom[i]);
+        handle.input_mute_set_async(i as u8, preset.input_mute[i]);
     }
-    let _ = handle.output_mute_set(preset.output_mute);
+    handle.output_mute_set_async(preset.output_mute);
     for in_idx in 0..10 {
         for out_idx in 0..4 {
             let db = preset.mixer[in_idx][out_idx];
-            let _ = handle.mixer_set(in_idx as u8, out_idx as u8, db);
+            handle.mixer_set_async(in_idx as u8, out_idx as u8, db);
         }
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(POLL_INTERVAL_MS));
         self.try_connect();
         self.poll_status();
 
@@ -297,7 +340,7 @@ impl eframe::App for App {
                                         if changed {
                                             let db_val = *db;
                                             if let Some(ref h) = handle {
-                                                let _ = h.mixer_set(in_idx as u8, out_idx as u8, db_val);
+                                                h.mixer_set_async(in_idx as u8, out_idx as u8, db_val);
                                             }
                                         }
                                         let val = if *db <= -128.0 {
@@ -320,8 +363,8 @@ impl eframe::App for App {
                 ui.heading("Device Disconnected");
                 ui.label("Plug in the Audient EVO 8 and ensure the kernel module is loaded.");
                 if ui.button("Retry").clicked() {
-                    self.last_poll = Instant::now()
-                        - std::time::Duration::from_millis(POLL_INTERVAL_MS + 1);
+                    self.drop_worker();
+                    self.try_connect();
                 }
                 return;
             }
@@ -346,7 +389,7 @@ impl eframe::App for App {
                             if widgets::rotary_knob(ui, &mut gain, -8.0, 50.0, 48.0, 0.5) {
                                 self.status.gain_db[i] = gain;
                                 if let Some(handle) = handle.as_ref() {
-                                    let _ = handle.gain_set(i as u8, gain);
+                                    handle.gain_set_async(i as u8, gain);
                                 }
                             }
                             ui.label(format!("{gain:.0} dB"));
@@ -358,7 +401,7 @@ impl eframe::App for App {
                                 phantom = !phantom;
                                 self.status.phantom[i] = phantom;
                                 if let Some(handle) = handle.as_ref() {
-                                    let _ = handle.phantom_set(i as u8, phantom);
+                                    handle.phantom_set_async(i as u8, phantom);
                                 }
                             }
 
@@ -368,7 +411,7 @@ impl eframe::App for App {
                                 muted = !muted;
                                 self.status.input_mute[i] = muted;
                                 if let Some(handle) = handle.as_ref() {
-                                    let _ = handle.input_mute_set(i as u8, muted);
+                                    handle.input_mute_set_async(i as u8, muted);
                                 }
                             }
 
@@ -420,7 +463,7 @@ impl eframe::App for App {
                             if widgets::rotary_knob(ui, &mut vol, -96.0, 0.0, 64.0, 0.5) {
                                 self.status.volume_db[pair] = vol;
                                 if let Some(handle) = handle.as_ref() {
-                                    let _ = handle.volume_set(pair as u8, vol);
+                                    handle.volume_set_async(pair as u8, vol);
                                 }
                             }
                             ui.label(format!("{vol:.1} dB"));
@@ -432,7 +475,7 @@ impl eframe::App for App {
                                 muted = !muted;
                                 self.status.output_mute = muted;
                                 if let Some(handle) = handle.as_ref() {
-                                    let _ = handle.output_mute_set(muted);
+                                    handle.output_mute_set_async(muted);
                                 }
                             }
                         });
